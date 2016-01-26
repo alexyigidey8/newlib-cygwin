@@ -1139,6 +1139,8 @@ sleep SIGFE
 snprintf SIGFE
 sockatmark SIGFE
 socket = cygwin_socket SIGFE
+cygwin_socket_dup_protocol_info SIGFE
+cygwin_socket_from_protocol_info SIGFE
 socketpair SIGFE
 spawnl SIGFE
 spawnle SIGFE

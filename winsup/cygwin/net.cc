@@ -668,6 +668,104 @@ fdsock (cygheap_fdmanip& fd, const device *dev, SOCKET soc)
   return true;
 }
 
+extern "C" int
+cygwin_socket_dup_protocol_info (int fd, int pid, LPWSAPROTOCOL_INFOW lpProtocolInfo)
+{
+  int res = -1;
+  int winpid = cygwin_internal (CW_CYGWIN_PID_TO_WINPID, pid);
+  
+  debug_printf ("cygwin_socket_dup_protocol_info (%d, %d)", fd, pid);
+  __try
+    {
+      fhandler_socket *fh = get (fd);
+      if (!fh)
+	    __leave;
+	
+      if (WSADuplicateSocketW (fh->get_socket (), winpid, lpProtocolInfo) != SOCKET_ERROR)
+        res = 0;	  
+    }
+  __except (EFAULT)
+    {
+      res = -1;
+    }
+  __endtry
+  return res;	
+}
+
+extern "C" int
+cygwin_socket_from_protocol_info (LPWSAPROTOCOL_INFOW lpProtocolInfo)
+{
+  int res = -1;
+  SOCKET soc = 0;
+  
+  int af = lpProtocolInfo->iAddressFamily;
+  int type = lpProtocolInfo->iSocketType;
+  int protocol = lpProtocolInfo->iProtocol;
+  int flags = type & _SOCK_FLAG_MASK;
+  type &= ~_SOCK_FLAG_MASK;
+
+  debug_printf ("cygwin_socket_from_protocol_info (%d, %d (flags %y), %d)", af, type, flags, protocol);
+
+  if ((flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) != 0)
+    {
+      set_errno (EINVAL);
+      goto done;
+    }
+
+  soc = WSASocketW (FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, lpProtocolInfo, 0, 0);
+
+  if (soc == INVALID_SOCKET)
+    {
+      set_winsock_errno ();
+      goto done;
+    }
+
+  const device *dev;
+
+  if (af == AF_LOCAL)
+    dev = type == SOCK_STREAM ? stream_dev : dgram_dev;
+  else
+    dev = type == SOCK_STREAM ? tcp_dev : udp_dev;
+
+  {
+    cygheap_fdnew fd;
+    if (fd < 0 || !fdsock (fd, dev, soc))
+      closesocket (soc);
+    else
+      {
+	((fhandler_socket *) fd)->set_addr_family (af);
+	((fhandler_socket *) fd)->set_socket_type (type);
+	if (flags & SOCK_NONBLOCK)
+	  ((fhandler_socket *) fd)->set_nonblocking (true);
+	if (flags & SOCK_CLOEXEC)
+	  ((fhandler_socket *) fd)->set_close_on_exec (true);
+	if (type == SOCK_DGRAM)
+	  {
+	    /* Workaround the problem that a missing listener on a UDP socket
+	       in a call to sendto will result in select/WSAEnumNetworkEvents
+	       reporting that the socket has pending data and a subsequent call
+	       to recvfrom will return -1 with error set to WSAECONNRESET.
+
+	       This problem is a regression introduced in Windows 2000.
+	       Instead of fixing the problem, a new socket IOCTL code has
+	       been added, see http://support.microsoft.com/kb/263823 */
+	    BOOL cr = FALSE;
+	    DWORD blen;
+	    if (WSAIoctl (soc, SIO_UDP_CONNRESET, &cr, sizeof cr, NULL, 0,
+			  &blen, NULL, NULL) == SOCKET_ERROR)
+	      debug_printf ("Reset SIO_UDP_CONNRESET: WinSock error %u",
+			    WSAGetLastError ());
+	  }
+	res = fd;
+      }
+  }
+
+done:
+  syscall_printf ("%R = cygwin_socket_from_protocol_info(%d, %d (flags %y), %d)",
+		  res, af, type, flags, protocol);
+  return res;	
+}
+
 /* exported as socket: standards? */
 extern "C" int
 cygwin_socket (int af, int type, int protocol)
